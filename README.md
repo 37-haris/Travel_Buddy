@@ -55,3 +55,19 @@ Answers are cached for the day in `.price_cache.json`.
 ```bash
 uv run python scripts/build_cities.py <that folder>
 ```
+
+## Deploy on Streamlit Community Cloud
+
+Online there is no Ollama and no API: `app.py` runs the agent itself, with a hosted model from Groq.
+
+1. Create a free key on https://console.groq.com/keys
+2. In the app's **Settings → Secrets** on share.streamlit.io, paste:
+   ```toml
+   GROQ_API_KEY = "gsk_..."
+   SERPAPI_KEY = "..."          # optional: live hotel prices
+   # LLM_MODEL = "openai/gpt-oss-120b"   # optional: another Groq model
+   ```
+3. Entrypoint `app.py`, Python 3.12 or newer. Dependencies are installed from `uv.lock`.
+
+How the app picks its agent: the API at `TRAVEL_BUDDY_API` (default `http://localhost:8000`) if it answers;
+otherwise it runs the agent in-process, with Groq if `GROQ_API_KEY` is set, else the local Ollama.

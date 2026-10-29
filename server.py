@@ -102,7 +102,7 @@ async def search_places(query: str, city: str, country: str, limit: int = 5) -> 
         {
             "name": place.get("name") or place.get("display_name", ""),
             "type": place.get("type", ""),
-            "address": place.get("display_name", ""),
+            "address": short_address(place.get("display_name", "")),
             "latitude": float(place.get("lat", 0)),
             "longitude": float(place.get("lon", 0)),
             "entry_fee": entry_fee(place)[0],
@@ -152,6 +152,12 @@ DEFAULT_TRANSPORT = 7  # a city with no fare in TRANSPORT_FARES
 FREE_TYPES = {"park", "garden", "square", "viewpoint", "place_of_worship", "church", "cathedral", "fountain",
               "pedestrian", "monument", "memorial", "artwork", "beach", "city", "town", "administrative"}
 FOOD_TYPES = {"restaurant", "fast_food", "cafe", "bar", "pub", "food_court", "bistro", "ice_cream"}
+
+
+def short_address(display_name: str) -> str:
+    """'Le Rectangle, Place Bellecour, Bellecour, Lyon 2e, Lyon, Métropole de Lyon, Rhône, ...' -> first 3 parts.
+    Full OpenStreetMap addresses fill the LLM context (and the free Groq token budget) for nothing."""
+    return ", ".join(display_name.split(", ")[:3])
 
 
 def normalize(name: str) -> str:
@@ -310,7 +316,7 @@ async def google_hotels(latitude, longitude, city, near, max_price, stars, check
         hotels.append({
             "name": prop["name"], "type": prop.get("type", "hotel"), "stars": prop.get("extracted_hotel_class"),
             "price_per_night": price, "price_source": f"live, Google Hotels ({check_in})",
-            "rating": prop.get("overall_rating"), "address": prop.get("description", ""), "website": prop.get("link"),
+            "rating": prop.get("overall_rating"), "address": (prop.get("description") or "")[:100], "website": prop.get("link"),
             "latitude": gps["latitude"], "longitude": gps["longitude"], "distance_km": distance,
         })
     # Cheapest first among those within 1.5 km (the agent tends to pick the first one), then the others by distance
@@ -356,7 +362,7 @@ async def search_hotels(latitude: float, longitude: float, city: str = "", near:
             "name": place.get("name") or place.get("display_name", ""),
             "type": place["type"],
             "stars": extra.get("stars"),
-            "address": place.get("display_name", ""),
+            "address": short_address(place.get("display_name", "")),
             "website": extra.get("website") or extra.get("contact:website"),
             "latitude": lat,
             "longitude": lon,

@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from server import SERPAPI_KEY
-from agent import MODEL, build_agent, build_request, day_schedule, final_budget, final_plan, get_traces, plan_trip, run_agent
+from agent import MODEL, build_agent, final_plan, get_traces, plan_trip, trip_events
 
 
 class PlanRequest(BaseModel):
@@ -75,30 +75,11 @@ async def plan(body: PlanRequest):
 @app.post("/trip/stream")
 async def trip_stream(trip: TripRequest):
     """Plan a trip from form fields. Streams one JSON line per event: each tool call as it happens, then the result."""
-    request = build_request(**trip.model_dump(mode="json"))
-
     async def events():
-        start = time.perf_counter()
         try:
-            async for event in run_agent(app.state.agent, request, pace=trip.pace):
-                if event["type"] in ("tool", "fix"):
-                    yield json.dumps(event, ensure_ascii=False) + "\n"
-                else:
-                    messages = event["messages"]
-                    traces = get_traces(messages)
-                    budget = final_budget(traces)
-                    yield json.dumps({
-                        "type": "result",
-                        "text": messages[-1].content,  # the LLM's day plan
-                        "budget": budget,  # computed by calculate_budget
-                        "schedule": day_schedule(trip.pace, budget),  # the pace's timetable, filled by code
-                        "pace": trip.pace,
-                        "traces": traces,
-                        "request": request,
-                        "model": MODEL,
-                        "duration_s": round(time.perf_counter() - start, 1),
-                    }, ensure_ascii=False) + "\n"
-        except Exception as e:  # Ollama down, Nominatim timeout...
+            async for event in trip_events(app.state.agent, trip.model_dump(mode="json")):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as e:  # LLM down, Nominatim timeout...
             yield json.dumps({"type": "error", "detail": f"Agent failed: {e}"}) + "\n"
 
     return StreamingResponse(events(), media_type="application/x-ndjson")

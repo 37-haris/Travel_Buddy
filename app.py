@@ -3,6 +3,7 @@
 Run: streamlit run app.py   (with the API started: uvicorn api:app)
 """
 
+import asyncio
 import gzip
 import html
 import json
@@ -15,7 +16,16 @@ import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-API_URL = os.getenv("TRAVEL_BUDDY_API", "http://localhost:8000")  # where `uvicorn api:app` runs
+# Streamlit Cloud: keys go in the app's Secrets (GROQ_API_KEY, SERPAPI_KEY). Copy them to the environment
+# before the agent is imported, so it and its tools subprocess see them.
+try:
+    for key, value in st.secrets.items():
+        if isinstance(value, str):
+            os.environ.setdefault(key, value)
+except Exception:  # no secrets file (local run): .env is used instead
+    pass
+
+API_URL = os.getenv("TRAVEL_BUDDY_API", "http://localhost:8000")  # where `uvicorn api:app` runs, if anywhere
 PACE_HINTS = {
     "Relaxed": ":material/self_improvement: 2 places · starts at 10:00 · long lunch",
     "Balanced": ":material/directions_walk: 3 places · starts at 09:30",
@@ -128,10 +138,20 @@ def weather_icon(description):
 
 
 # ---------- Hero with the connection status ----------
+# Two ways to run the agent: through the API (local, `uvicorn api:app`), or here in the app (Streamlit Cloud).
 try:
     health = httpx.get(f"{API_URL}/health", timeout=3).json()
+    use_api = True
 except Exception:
-    health = None
+    use_api = False
+    import agent
+    from server import SERPAPI_KEY
+    health = {"model": agent.MODEL, "live_prices": bool(SERPAPI_KEY)}
+    if not agent.GROQ_API_KEY:  # in-app without Groq means the local Ollama: is it running?
+        try:
+            httpx.get("http://localhost:11434/api/tags", timeout=2)
+        except Exception:
+            health = None
 
 
 def chip(text, state):
@@ -150,8 +170,8 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 if not health:
-    st.error(f"The agent API isn't reachable at {API_URL}. Start it with `uv run uvicorn api:app`, then refresh.",
-             icon=":material/cloud_off:")
+    st.error("No AI model available. Online: add `GROQ_API_KEY` to the app's Secrets (free key on console.groq.com). "
+             "Locally: start Ollama, or the API with `uv run uvicorn api:app`, then refresh.", icon=":material/cloud_off:")
 
 # ---------- Form: one card per step ----------
 col_where, col_like, col_stay = st.columns(3, gap="medium")
@@ -207,33 +227,44 @@ elif submit:
     }
     with st.status(f"Planning your day in {city}…", expanded=True) as status:
         shown = set()
+
+        def show(event):
+            if event["type"] == "fix":
+                st.write(f":material/tune: {event['detail']}")
+            elif event["type"] == "tool":
+                icon, label = STEP_LABELS.get(event["tool"], ("build", lambda a: event["tool"]))
+                text = f":material/{icon}: {label(event['args'])}"
+                if text not in shown:  # the agent often repeats a call: show each step once
+                    shown.add(text)
+                    st.write(text)
+            elif event["type"] == "result":
+                st.session_state.result = event
+                st.session_state.trip = payload
+                status.update(label=f"Your day in {city} is ready ({event['duration_s']} s)",
+                              state="complete", expanded=False)
+            elif event["type"] == "error":
+                status.update(label="Planning failed", state="error")
+                st.error(event["detail"], icon=":material/error:")
+
+        async def run_here():
+            # Built per request: its HTTP clients belong to this event loop
+            async for event in agent.trip_events(await agent.build_agent(), payload):
+                show(event)
+
         try:
-            with httpx.stream("POST", f"{API_URL}/trip/stream", json=payload, timeout=600) as r:
-                r.raise_for_status()
-                for line in r.iter_lines():
-                    event = json.loads(line)
-                    if event["type"] == "fix":
-                        st.write(f":material/tune: {event['detail']}")
-                    elif event["type"] == "tool":
-                        icon, label = STEP_LABELS.get(event["tool"], ("build", lambda a: event["tool"]))
-                        text = f":material/{icon}: {label(event['args'])}"
-                        if text not in shown:  # the agent often repeats a call: show each step once
-                            shown.add(text)
-                            st.write(text)
-                    elif event["type"] == "result":
-                        st.session_state.result = event
-                        st.session_state.trip = payload
-                        status.update(label=f"Your day in {city} is ready ({event['duration_s']} s)",
-                                      state="complete", expanded=False)
-                    elif event["type"] == "error":
-                        status.update(label="Planning failed", state="error")
-                        st.error(event["detail"], icon=":material/error:")
+            if use_api:
+                with httpx.stream("POST", f"{API_URL}/trip/stream", json=payload, timeout=600) as r:
+                    r.raise_for_status()
+                    for line in r.iter_lines():
+                        show(json.loads(line))
+            else:
+                asyncio.run(run_here())
         except httpx.HTTPStatusError as e:
             status.update(label="Planning failed", state="error")
             st.error(f"API error {e.response.status_code}: check the form values.", icon=":material/error:")
-        except Exception as e:
+        except Exception as e:  # API unreachable, LLM down or over its rate limit, a tool timing out...
             status.update(label="Planning failed", state="error")
-            st.error(f"Cannot reach the API at {API_URL}: {e}", icon=":material/cloud_off:")
+            st.error(f"The agent failed: {e}", icon=":material/error:")
 
 # ---------- Result ----------
 result, trip = st.session_state.get("result"), st.session_state.get("trip")

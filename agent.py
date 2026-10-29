@@ -1,8 +1,11 @@
-"""Travel Buddy - LangChain agent (local Ollama LLM) using the Travel Services MCP tools."""
+"""Travel Buddy - LangChain agent using the Travel Services MCP tools.
+LLM: Groq (hosted) when GROQ_API_KEY is set, e.g. on Streamlit Cloud; otherwise the local Ollama model."""
 
 import asyncio
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 from langchain.agents import create_agent
@@ -10,7 +13,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_ollama import ChatOllama
 
-MODEL = "qwen2.5:7b"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+MODEL = os.getenv("LLM_MODEL") or ("openai/gpt-oss-120b" if GROQ_API_KEY else "qwen2.5:7b")
 
 SERVER_PATH = Path(__file__).parent / "server.py"
 
@@ -105,21 +109,28 @@ async def build_agent():
             "command": sys.executable,
             "args": [str(SERVER_PATH)],
             "transport": "stdio",
+            # By default the subprocess only gets PATH/HOME: pass the environment so it sees SERPAPI_KEY
+            "env": dict(os.environ),
         }
     })
     tools = await client.get_tools()
     print("MCP tools loaded:", [t.name for t in tools])
 
-    # Item 4: local LLM via Ollama
-    # temperature=0 (greedy) makes small models loop and trip Ollama's "token repeat limit";
-    # a little randomness + repeat_penalty avoids it, and a bigger context fits all tool results.
-    llm = ChatOllama(
-        model=MODEL,
-        temperature=0.2,
-        repeat_penalty=1.15,
-        num_ctx=8192,
-        num_predict=1024,
-    )
+    if GROQ_API_KEY:
+        from langchain_groq import ChatGroq  # hosted LLM, used online where there is no Ollama
+        # The free tier allows a few thousand tokens per minute: retries wait for the limit to reset
+        llm = ChatGroq(model=MODEL, temperature=0.2, max_retries=8)
+    else:
+        # Item 4: local LLM via Ollama
+        # temperature=0 (greedy) makes small models loop and trip Ollama's "token repeat limit";
+        # a little randomness + repeat_penalty avoids it, and a bigger context fits all tool results.
+        llm = ChatOllama(
+            model=MODEL,
+            temperature=0.2,
+            repeat_penalty=1.15,
+            num_ctx=8192,
+            num_predict=1024,
+        )
 
     # Item 5: the agent picks which tool to call, based on the request
     return create_agent(llm, tools, system_prompt=SYSTEM_PROMPT)
@@ -225,6 +236,31 @@ async def run_agent(agent, request, pace=None):
             f"search_places results, searching more if needed, "
             f"call calculate_budget again with those {needed} places, then rewrite the day plan following the timetable."))
     yield {"type": "done", "messages": messages}
+
+
+async def trip_events(agent, trip):
+    """Plan a trip from the form fields (a dict like api.TripRequest): yields each step, then the full result.
+    Used by the API (streamed as JSON lines) and by the Streamlit app when it runs the agent itself."""
+    request = build_request(**trip)
+    start = time.perf_counter()
+    async for event in run_agent(agent, request, pace=trip["pace"]):
+        if event["type"] != "done":
+            yield event
+            continue
+        messages = event["messages"]
+        traces = get_traces(messages)
+        budget = final_budget(traces)
+        yield {
+            "type": "result",
+            "text": messages[-1].content,  # the LLM's day plan
+            "budget": budget,  # computed by calculate_budget
+            "schedule": day_schedule(trip["pace"], budget),  # the pace's timetable, filled by code
+            "pace": trip["pace"],
+            "traces": traces,
+            "request": request,
+            "model": MODEL,
+            "duration_s": round(time.perf_counter() - start, 1),
+        }
 
 
 async def plan_trip(agent, request):
