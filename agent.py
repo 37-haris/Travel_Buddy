@@ -198,6 +198,7 @@ def build_request(city, country, trip_date, interests, budget, pace="Balanced", 
         lines.append("I don't need a hotel.")
     if notes.strip():
         lines.append(f"Also: {notes.strip()}")
+    lines.append("Write the day plan in English.")  # bigger models otherwise switch to the city's language
     return "\n".join(lines)
 
 
