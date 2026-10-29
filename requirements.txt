@@ -1,0 +1,11 @@
+mcp>=1.20, <2
+langchain>=1.0
+langchain-mcp-adapters
+langchain-ollama
+httpx
+pytest
+fastmcp
+fastapi
+uvicorn
+streamlit
+python-dotenv

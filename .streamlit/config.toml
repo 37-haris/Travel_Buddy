@@ -1,0 +1,14 @@
+# Travel/Tourism palette (sky blue + adventure orange), Plus Jakarta Sans
+[theme]
+base = "light"
+primaryColor = "#0369A1"
+backgroundColor = "#F0F9FF"
+secondaryBackgroundColor = "#E0F2FE"
+textColor = "#0C4A6E"
+borderColor = "#BAE6FD"
+showWidgetBorder = true
+linkColor = "#0369A1"
+font = "Plus Jakarta Sans:https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap, sans-serif"
+baseRadius = "12px"
+buttonRadius = "10px"
+orangeColor = "#EA580C"
